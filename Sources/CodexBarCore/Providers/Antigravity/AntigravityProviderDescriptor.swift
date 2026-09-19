@@ -51,7 +51,8 @@ public enum AntigravityProviderDescriptor {
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: true,
                 noDataMessage: { "Antigravity cost summary is not supported." },
-                supportsTokenSnapshot: true),
+                supportsTokenSnapshot: true,
+                presentation: .tokensOnly),
             pace: ProviderPaceCapability(
                 sessionPaceWindowRule: .custom { window, _ in
                     window.windowMinutes == nil || window.windowMinutes == 300

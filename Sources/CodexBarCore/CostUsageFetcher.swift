@@ -428,10 +428,11 @@ public struct CostUsageFetcher: Sendable {
         }
 
         // Provider-specific by design: Cursor and Antigravity local readers backfill providers without remote history.
-        let fallbackCalendar = Self.resolvedScannerOptions(
+        let fallbackOptions = Self.resolvedScannerOptions(
             overrideScannerOptions,
             provider: provider,
-            codexHomePath: codexHomePath).calendar
+            codexHomePath: codexHomePath)
+        let fallbackCalendar = fallbackOptions.calendar
         if provider == .cursor {
             if let local = await self.loadCursorLocalSnapshot(
                 now: now, historyDays: clampedHistoryDays, calendar: fallbackCalendar)
@@ -441,12 +442,10 @@ public struct CostUsageFetcher: Sendable {
             if let remoteError {
                 throw remoteError
             }
-            return Self.tokenSnapshot(
-                from: CostUsageDailyReport(data: [], summary: nil),
+            return Self.unavailableLocalSnapshot(
                 now: now,
                 historyDays: clampedHistoryDays,
-                calendar: fallbackCalendar,
-                historyCoverageIsEstablished: false)
+                calendar: fallbackCalendar)
         }
         // Provider-specific by design: Antigravity uses recognized local stores without generic pricing or cache scans.
         if provider == .antigravity {
@@ -461,12 +460,18 @@ public struct CostUsageFetcher: Sendable {
             if let remoteError {
                 throw remoteError
             }
-            return Self.tokenSnapshot(
-                from: CostUsageDailyReport(data: [], summary: nil),
+            return Self.unavailableLocalSnapshot(
                 now: now,
                 historyDays: clampedHistoryDays,
-                calendar: fallbackCalendar,
-                historyCoverageIsEstablished: false)
+                calendar: fallbackCalendar)
+        }
+        // Provider-specific by design: Muse local history has token evidence but no established dollar rates.
+        if provider == .muse {
+            return try await Self.loadMuseLocalSnapshot(
+                environment: environment,
+                now: now,
+                historyDays: clampedHistoryDays,
+                options: fallbackOptions)
         }
         if let remoteError {
             throw remoteError
@@ -574,6 +579,19 @@ public struct CostUsageFetcher: Sendable {
         let shouldMergePiUsage: Bool
         let scanOptions: CostUsageScanner.Options
         let piOptions: PiSessionCostScanner.Options
+    }
+
+    private static func unavailableLocalSnapshot(
+        now: Date,
+        historyDays: Int,
+        calendar: Calendar) -> CostUsageTokenSnapshot
+    {
+        self.tokenSnapshot(
+            from: CostUsageDailyReport(data: [], summary: nil),
+            now: now,
+            historyDays: historyDays,
+            calendar: calendar,
+            historyCoverageIsEstablished: false)
     }
 
     private static func loadLocalTokenScanResult(
@@ -1273,6 +1291,7 @@ public struct CostUsageFetcher: Sendable {
         useCurrentLocalDayForSession: Bool = true,
         calendar: Calendar = .current,
         historyCoverageIsEstablished: Bool = true,
+        monetaryValuesAreAvailable: Bool = true,
         meteredCostUSD: Double? = nil,
         costProvenance: CostProvenance = .unknown,
         credentialScopeFingerprint: String? = nil,
@@ -1288,16 +1307,18 @@ public struct CostUsageFetcher: Sendable {
         let establishedEmptyHistory = historyCoverageIsEstablished && daily.data.isEmpty
         let sessionTokens: Int? = if let sessionEntry {
             sessionEntry.totalTokens
-        } else if hasHistoricalRows {
+        } else if hasHistoricalRows, historyCoverageIsEstablished {
             0
         } else if establishedEmptyHistory {
             0
         } else {
             nil
         }
-        let sessionCostUSD: Double? = if let sessionEntry {
+        let sessionCostUSD: Double? = if !monetaryValuesAreAvailable {
+            nil
+        } else if let sessionEntry {
             sessionEntry.costUSD
-        } else if hasHistoricalRows {
+        } else if hasHistoricalRows, historyCoverageIsEstablished {
             0
         } else if establishedEmptyHistory {
             0
@@ -1310,10 +1331,10 @@ public struct CostUsageFetcher: Sendable {
         let totalFromSummary = daily.summary?.totalCostUSD
         let totalFromEntries = daily.data.compactMap(\.costUSD).reduce(0, +)
         let allEntriesCarryCost = !daily.data.isEmpty && daily.data.allSatisfy { $0.costUSD != nil }
-        let last30DaysCostUSD = totalFromSummary
+        let last30DaysCostUSD = monetaryValuesAreAvailable ? totalFromSummary
             ?? (allEntriesCarryCost
                 ? totalFromEntries
-                : establishedEmptyHistory ? 0 : nil)
+                : establishedEmptyHistory ? 0 : nil) : nil
         let totalTokensFromSummary = daily.summary?.totalTokens
         let totalTokensFromEntries: Int? = {
             var sum = 0
@@ -1340,7 +1361,7 @@ public struct CostUsageFetcher: Sendable {
             historyDays: historyDays,
             historyCoverageIsEstablished: historyCoverageIsEstablished,
             historyLabel: historyLabel,
-            meteredCostUSD: meteredCostUSD,
+            meteredCostUSD: monetaryValuesAreAvailable ? meteredCostUSD : nil,
             costProvenance: costProvenance,
             credentialScopeFingerprint: credentialScopeFingerprint,
             daily: daily.data,

@@ -8,10 +8,15 @@ struct InlineUsageDashboardModel: Equatable {
         let tokenCount: Int?
         let currencyCode: String
         var incompleteRequestCount: Int = 0
+        var tokensOnly = false
 
         var summary: String {
             let cost = self.cost.map { UsageFormatter.currencyString($0, currencyCode: self.currencyCode) } ?? "—"
             let tokens = self.tokenCount.map(UsageFormatter.tokenCountString) ?? "—"
+            if self.tokensOnly {
+                return L("%@: %@", self.dateLabel, L("%@ tokens", tokens))
+                    + UsageFormatter.incompleteUsageSuffix(self.incompleteRequestCount)
+            }
             return L("%@: %@ · %@ tokens", self.dateLabel, cost, tokens)
                 + UsageFormatter.incompleteUsageSuffix(self.incompleteRequestCount)
         }
@@ -154,6 +159,13 @@ extension UsageMenuCardView.Model {
         preferredCurrencyCode: String,
         calendar: Calendar) -> InlineUsageDashboardModel
     {
+        if ProviderDescriptorRegistry.descriptor(for: provider).tokenCost.presentation == .tokensOnly {
+            return self.tokenHistoryInlineDashboard(
+                provider: provider,
+                snapshot: snapshot,
+                comparisonPeriodsEnabled: comparisonPeriodsEnabled,
+                calendar: calendar)
+        }
         let displayCurrencyCode = UsageFormatter.convertedCost(
             0,
             preferredCurrency: preferredCurrencyCode,
@@ -297,6 +309,51 @@ extension UsageMenuCardView.Model {
         return model
     }
 
+    private static func tokenHistoryInlineDashboard(
+        provider: UsageProvider,
+        snapshot: CostUsageTokenSnapshot,
+        comparisonPeriodsEnabled: Bool,
+        calendar: Calendar) -> InlineUsageDashboardModel
+    {
+        let config = ProviderDescriptorRegistry.descriptor(for: provider).tokenCost
+        let historyDays = max(1, min(365, snapshot.historyDays))
+        let historyLabel = snapshot.historyLabel ?? Self.costHistoryWindowLabel(days: historyDays)
+        var kpis = [InlineUsageDashboardModel.KPI(
+            title: L("Today"),
+            value: L("%@ tokens", snapshot.sessionTokens.map(UsageFormatter.tokenCountString) ?? "—"),
+            emphasis: true)]
+        if historyDays > 1 {
+            kpis.append(.init(
+                title: historyLabel,
+                value: L("%@ tokens", snapshot.last30DaysTokens.map(UsageFormatter.tokenCountString) ?? "—"),
+                emphasis: false))
+        }
+        var details = Self.tokenUsageHintLines(provider: provider)
+        if details.isEmpty { details.append(L("Local token history · dollar costs unavailable")) }
+        if let coverage = Self.tokenHistoryCoverageHint(snapshot) { details.append(coverage) }
+        if comparisonPeriodsEnabled {
+            details.append(contentsOf: snapshot.comparisonSummaries(calendar: calendar).map {
+                Self.tokenWindowLine(label: Self.costHistoryWindowLabel(days: $0.days), tokens: $0.totalTokens)
+            })
+        }
+        let points = Self.inlineCostHistoryPoints(
+            days: Self.inlineCostHistoryDays(
+                snapshot: snapshot,
+                historyDays: historyDays,
+                preservesCalendarDays: config.preservesCalendarDaysInCharts,
+                calendar: calendar),
+            displayCurrencyCode: "USD",
+            convertedValue: { $0 },
+            tokensOnly: true)
+        let name = ProviderDescriptorRegistry.descriptor(for: provider).metadata.displayName
+        return InlineUsageDashboardModel(
+            accessibilityLabel: L("%@: %@", name, L("Token history")),
+            valueStyle: .tokens,
+            kpis: kpis,
+            points: points,
+            detailLines: details)
+    }
+
     private static func costHistoryTrailingKPIs(
         snapshot: CostUsageTokenSnapshot,
         latest: CostUsageDailyReport.Entry?)
@@ -386,7 +443,8 @@ extension UsageMenuCardView.Model {
     private static func inlineCostHistoryPoints(
         days: [(date: String, costUSD: Double?, totalTokens: Int?, incompleteRequestCount: Int)],
         displayCurrencyCode: String,
-        convertedValue: (Double) -> Double) -> [InlineUsageDashboardModel.Point]
+        convertedValue: (Double) -> Double,
+        tokensOnly: Bool = false) -> [InlineUsageDashboardModel.Point]
     {
         let parser = DateFormatter()
         parser.locale = Locale(identifier: "en_US_POSIX")
@@ -398,7 +456,7 @@ extension UsageMenuCardView.Model {
         formatter.setLocalizedDateFormatFromTemplate("yMMMd")
         return days.map { day in
             let dateLabel = parser.date(from: day.date).map(formatter.string(from:)) ?? day.date
-            let costUSD = day.costUSD.flatMap { $0 >= 0 ? $0 : nil }
+            let costUSD = tokensOnly ? nil : day.costUSD.flatMap { $0 >= 0 ? $0 : nil }
             let tokenCount = day.totalTokens.flatMap { $0 >= 0 ? $0 : nil }
             let convertedCost = costUSD.map(convertedValue)
             let hoverDetail: InlineUsageDashboardModel.HoverDetail? = if costUSD != nil || tokenCount != nil || day
@@ -409,14 +467,15 @@ extension UsageMenuCardView.Model {
                     cost: convertedCost,
                     tokenCount: tokenCount,
                     currencyCode: displayCurrencyCode,
-                    incompleteRequestCount: day.incompleteRequestCount)
+                    incompleteRequestCount: day.incompleteRequestCount,
+                    tokensOnly: tokensOnly)
             } else {
                 nil
             }
             return InlineUsageDashboardModel.Point(
                 id: day.date,
                 label: Self.shortDayLabel(day.date),
-                value: convertedCost,
+                value: tokensOnly ? tokenCount.map(Double.init) : convertedCost,
                 accessibilityValue: hoverDetail?.summary ?? "\(dateLabel): \(L("Unknown"))",
                 hoverDetail: hoverDetail)
         }

@@ -167,9 +167,9 @@ extension CodexBarCLI {
         calendar: Calendar = .current,
         includeBreakdown: Bool = false) -> String
     {
-        let name = ProviderDescriptorRegistry.descriptor(for: provider).metadata.displayName
-        // Provider-specific by design: Antigravity exposes token history, not priced estimates.
-        if provider == .antigravity {
+        let descriptor = ProviderDescriptorRegistry.descriptor(for: provider)
+        let name = descriptor.metadata.displayName
+        if descriptor.tokenCost.presentation == .tokensOnly {
             return Self.renderLocalTokenHistoryText(name: name, snapshot: snapshot, useColor: useColor)
         }
         // Provider-specific by design: Codex cost is explicitly an API-equivalent local-session estimate.
@@ -421,7 +421,7 @@ extension CodexBarCLI {
     {
         let header = Self.costHeaderLine("\(name) Token History", useColor: useColor)
         let hint = "Local token history · dollar costs unavailable"
-        guard snapshot.historyCoverageIsEstablished else {
+        guard snapshot.historyCoverageIsEstablished || snapshot.last30DaysTokens != nil else {
             return [header, "Local token history is unavailable or incomplete.", hint].joined(separator: "\n")
         }
         let today = snapshot.sessionTokens.map { "\(UsageFormatter.tokenCountString($0)) tokens" } ?? "—"
@@ -432,7 +432,9 @@ extension CodexBarCLI {
             header,
             "Today: \(today)",
             snapshot.historyDays == 1 ? nil : "\(historyLabel): \(total)",
-            snapshot.daily.isEmpty ? "No token usage found in the selected period." : nil,
+            snapshot.daily.isEmpty && snapshot.historyCoverageIsEstablished
+                ? "No token usage found in the selected period." : nil,
+            snapshot.historyCoverageIsEstablished ? nil : "Partial local history · recorded token subtotal",
             hint,
         ]
         return lines.compactMap(\.self).joined(separator: "\n")

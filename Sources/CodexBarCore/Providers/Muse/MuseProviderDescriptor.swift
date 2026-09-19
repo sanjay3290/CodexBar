@@ -45,15 +45,23 @@ public enum MuseProviderDescriptor {
                     ProviderColor(hex: 0xFFFFFF),
                 ]),
             tokenCost: ProviderTokenCostConfig(
-                supportsTokenCost: false,
-                noDataMessage: { "Muse Code subscription usage is reported as 5-hour and weekly windows." }),
+                supportsTokenCost: true,
+                noDataMessage: { "No readable Muse session token history found." },
+                menuHintLines: [.literal("Local token history · dollar costs unavailable")],
+                supportsTokenSnapshot: true,
+                showsHintInProviderDetails: true,
+                estimateDisclaimer: "Local token history · dollar costs unavailable",
+                presentation: .tokensOnly),
+            presentation: ProviderUsagePresentation(
+                menuCard: ProviderMenuCardPresentation(supportsInlineTokenCostDashboard: true)),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .oauth],
                 pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [MuseOAuthFetchStrategy()] })),
             cli: ProviderCLIConfig(
                 name: "muse",
                 aliases: ["muse-code"],
-                versionDetector: nil))
+                versionDetector: nil,
+                supportsCostCommand: true))
     }
 }
 
